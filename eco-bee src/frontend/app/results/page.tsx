@@ -8,7 +8,7 @@ function ResultsContent() {
   const searchParams = useSearchParams();
   const resultParam = searchParams.get("result");
 
-  let result = null;
+  let result: any = null;
   try {
     result = resultParam ? JSON.parse(decodeURIComponent(resultParam)) : null;
   } catch (error) {
@@ -320,7 +320,7 @@ function LoadingFallback() {
 
 export default function ResultsPage() {
   return (
-    <Suspense fallback={<LoadingFallback />}>
+    <Suspense fallback={null}>
       <ResultsContent />
     </Suspense>
   );
