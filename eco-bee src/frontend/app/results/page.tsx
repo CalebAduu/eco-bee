@@ -320,7 +320,7 @@ function LoadingFallback() {
 
 export default function ResultsPage() {
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<LoadingFallback/>}>
       <ResultsContent />
     </Suspense>
   );
