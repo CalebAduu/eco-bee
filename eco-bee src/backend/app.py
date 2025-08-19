@@ -10,8 +10,9 @@ import json
 import requests
 import re
 from PIL import Image
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
+from supabase import create_client
 
 # Enhanced imports
 from ecoscore import calculate_ecoscore, calculate_ecoscore_from_quiz_responses, score_item, PLANETARY_BOUNDARIES
@@ -374,6 +375,58 @@ async def enhanced_intake(
                 if item_alternatives:
                     alternatives.extend(item_alternatives)
         
+        # Save to Supabase if available
+        try:
+            if SUPABASE_CLIENT and request_obj.quiz_responses:
+                # Generate a unique record ID
+                record_id = str(uuid.uuid4())
+                
+                # Prepare quiz responses for database
+                quiz_responses_data = []
+                for response in request_obj.quiz_responses:
+                    quiz_responses_data.append({
+                        "question_id": response.question_id,
+                        "question_text": response.question_text,
+                        "answer": response.answer,
+                        "category": response.category
+                    })
+                
+                # Prepare scoring result for database
+                scoring_result_data = {
+                    "items": [item.model_dump() for item in scoring_result.items] if scoring_result.items else [],
+                    "per_boundary_averages": scoring_result.per_boundary_averages.model_dump(),
+                    "composite": scoring_result.composite,
+                    "grade": scoring_result.grade,
+                    "recommendations": scoring_result.recommendations,
+                    "boundary_details": scoring_result.boundary_details
+                }
+                
+                # Prepare user metadata
+                user_metadata = {
+                    "session_id": session_id,
+                    "items_count": len(request_obj.items),
+                    "has_barcode_items": any(item.barcode for item in request_obj.items),
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+                
+                # Generate unique dummy user ID to avoid collisions
+                dummy_user_id = f"anonymous_user_{uuid.uuid4().hex[:8]}"
+                
+                # Insert into Supabase
+                result = SUPABASE_CLIENT.table("quiz_results").insert({
+                    "id": record_id,
+                    "dummy_user_id": dummy_user_id,  # Use correct column name and unique ID
+                    "quiz_responses": quiz_responses_data,
+                    "scoring_result": scoring_result_data,
+                    "user_metadata": user_metadata
+                }).execute()
+                
+                print(f"✅ Quiz results saved to Supabase with ID: {record_id}, dummy_user_id: {dummy_user_id}")
+                
+        except Exception as supabase_error:
+            print(f"⚠️ Warning: Could not save to Supabase: {supabase_error}")
+            # Continue execution even if Supabase save fails
+        
         return IntakeResponse(
             items=request_obj.items,
             quiz_responses=request_obj.quiz_responses,
@@ -708,6 +761,53 @@ async def submit_score_endpoint(payload: Dict):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error submitting score: {str(e)}")
+
+
+# Supabase client initialization (uses env vars SUPABASE_URL and SUPABASE_KEY)
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_CLIENT = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        SUPABASE_CLIENT = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("✅ Supabase client initialized")
+    except Exception as e:
+        print(f"⚠️ Failed to initialize Supabase client: {e}")
+else:
+    print("⚠️ SUPABASE_URL or SUPABASE_KEY not set; Supabase integrations disabled")
+
+
+@app.post('/api/save-results')
+async def save_results(payload: Dict):
+    """Save quiz results to Supabase `quiz_results` table using a dummy user id for privacy."""
+    try:
+        if SUPABASE_CLIENT is None:
+            raise HTTPException(status_code=503, detail="Supabase client not configured on server")
+
+        # Build record to insert. Use a dummy anonymous id to avoid collecting personal data.
+        # Generate unique dummy user ID to avoid collisions
+        dummy_user_id = f"anonymous_user_{uuid.uuid4().hex[:8]}"
+        
+        record = {
+            "id": str(uuid.uuid4()),
+            "dummy_user_id": dummy_user_id,
+            "session_id": payload.get("session_id", f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "quiz_responses": payload.get("quiz_responses", []),
+            "scoring_result": payload.get("scoring_result", {}),
+            "user_metadata": payload.get("user_metadata", {})
+        }
+
+        resp = SUPABASE_CLIENT.table('quiz_results').insert(record).execute()
+
+        # supabase returns data in resp.data for the python client
+        return {"status": "ok", "inserted": resp.data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error saving results to Supabase: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save results: {e}")
 
 @app.get("/api/recommendations")
 async def get_recommendations_endpoint(
